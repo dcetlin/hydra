@@ -16,6 +16,7 @@ import {
   type Message,
 } from 'discord.js'
 import { readFileSync, writeFileSync, mkdirSync, statSync } from 'fs'
+import { sanitizeFilename } from './gateway.js'
 import type {
   ChatGateway,
   InboundMessage,
@@ -202,10 +203,23 @@ export class DiscordGateway implements ChatGateway {
     return edited.id
   }
 
+  async delete(channelId: string, messageId: string): Promise<void> {
+    const ch = await this.fetchTextChannel(channelId)
+    const msg = await ch.messages.fetch(messageId)
+    await msg.delete()
+  }
+
   async react(channelId: string, messageId: string, emoji: string): Promise<void> {
     const ch = await this.fetchTextChannel(channelId)
     const msg = await ch.messages.fetch(messageId)
     await msg.react(emoji)
+  }
+
+  async unreact(channelId: string, messageId: string, emoji: string): Promise<void> {
+    const ch = await this.fetchTextChannel(channelId)
+    const msg = await ch.messages.fetch(messageId)
+    const botReaction = msg.reactions.cache.find(r => r.emoji.name === emoji)
+    if (botReaction) await botReaction.users.remove(this.client.user!.id)
   }
 
   async typing(channelId: string): Promise<void> {
@@ -301,10 +315,9 @@ export class DiscordGateway implements ChatGateway {
       }
       const res = await fetch(att.url)
       const buf = Buffer.from(await res.arrayBuffer())
-      const name = att.name ?? `${att.id}`
-      const rawExt = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : 'bin'
-      const ext = rawExt.replace(/[^a-zA-Z0-9]/g, '') || 'bin'
-      const path = `${inboxDir}/${Date.now()}-${att.id}.${ext}`
+      const name = att.name || `${att.id}`
+      const sanitizedName = sanitizeFilename(name, `${att.id}`)
+      const path = `${inboxDir}/${Date.now()}-${sanitizedName}`
       mkdirSync(inboxDir, { recursive: true })
       writeFileSync(path, buf)
       results.push({

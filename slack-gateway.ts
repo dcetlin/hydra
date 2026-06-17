@@ -7,6 +7,7 @@
 
 import { App, type MessageEvent, type GenericMessageEvent, type BotMessageEvent } from '@slack/bolt'
 import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { sanitizeFilename } from './gateway.js'
 import type {
   ChatGateway,
   InboundMessage,
@@ -369,11 +370,28 @@ export class SlackGateway implements ChatGateway {
     return result.ts!
   }
 
+  async delete(channelId: string, messageId: string): Promise<void> {
+    if (!this.app) throw new Error('not connected')
+    const { channel } = this.parseChannelId(channelId)
+    await this.app.client.chat.delete({ channel, ts: messageId })
+  }
+
   async react(channelId: string, messageId: string, emoji: string): Promise<void> {
     if (!this.app) throw new Error('not connected')
     const { channel } = this.parseChannelId(channelId)
     const name = this.emojiToSlackName(emoji)
     await this.app.client.reactions.add({
+      channel,
+      timestamp: messageId,
+      name,
+    })
+  }
+
+  async unreact(channelId: string, messageId: string, emoji: string): Promise<void> {
+    if (!this.app) throw new Error('not connected')
+    const { channel } = this.parseChannelId(channelId)
+    const name = this.emojiToSlackName(emoji)
+    await this.app.client.reactions.remove({
       channel,
       timestamp: messageId,
       name,
@@ -501,17 +519,27 @@ export class SlackGateway implements ChatGateway {
 
   async downloadAttachments(channelId: string, messageId: string, inboxDir: string): Promise<DownloadedFile[]> {
     if (!this.app) throw new Error('not connected')
-    const { channel } = this.parseChannelId(channelId)
+    const { channel, threadTs } = this.parseChannelId(channelId)
 
-    // Fetch the specific message
-    const result = await this.app.client.conversations.history({
-      channel,
-      latest: messageId,
-      inclusive: true,
-      limit: 1,
-    })
-
-    const msg = result.messages?.[0]
+    let msg: any
+    if (threadTs) {
+      const result = await this.app.client.conversations.replies({
+        channel,
+        ts: threadTs,
+        latest: messageId,
+        inclusive: true,
+        limit: 1,
+      })
+      msg = result.messages?.find(m => m.ts === messageId)
+    } else {
+      const result = await this.app.client.conversations.history({
+        channel,
+        latest: messageId,
+        inclusive: true,
+        limit: 1,
+      })
+      msg = result.messages?.[0]
+    }
     if (!msg || !msg.files?.length) return []
 
     const results: DownloadedFile[] = []
@@ -528,10 +556,9 @@ export class SlackGateway implements ChatGateway {
       })
       const buf = Buffer.from(await res.arrayBuffer())
 
-      const name = file.name ?? `${file.id}`
-      const rawExt = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : 'bin'
-      const ext = rawExt.replace(/[^a-zA-Z0-9]/g, '') || 'bin'
-      const path = `${inboxDir}/${Date.now()}-${file.id}.${ext}`
+      const name = file.name || `${file.id}`
+      const sanitizedName = sanitizeFilename(name, `${file.id}`)
+      const path = `${inboxDir}/${Date.now()}-${sanitizedName}`
       mkdirSync(inboxDir, { recursive: true })
       writeFileSync(path, buf)
 
@@ -820,6 +847,12 @@ export class SlackGateway implements ChatGateway {
       '🤝': 'handshake',
       '🔄': 'arrows_counterclockwise',
       '🔌': 'electric_plug',
+      '⏯️': 'play_pause',
+      '🔁': 'repeat',
+      '💀': 'skull',
+      '💥': 'boom',
+      '🧟': 'zombie',
+      '🔮': 'crystal_ball',
     }
     if (map[emoji]) return map[emoji]
     // If it's already a text name (no colons), return as-is
